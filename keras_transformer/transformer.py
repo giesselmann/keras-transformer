@@ -3,10 +3,12 @@ Contains implementation of the Transformer model described in papers
 "Attention is all you need" (https://arxiv.org/abs/1706.03762) and
 "Universal Transformer" (https://arxiv.org/abs/1807.03819)
 """
+import sys
 import math
 from typing import Union, Callable, Optional
 
-from keras.layers import Layer, Add, activations, Dropout
+from keras.layers import Layer, Add, Dropout
+from keras import activations
 from keras import initializers
 # noinspection PyPep8Naming
 from keras import backend as K
@@ -169,7 +171,7 @@ class TransformerBlock:
     def __init__(self, name: str, num_heads: int,
                  residual_dropout: float = 0, attention_dropout: float = 0,
                  activation: Optional[Union[str, Callable]] = 'gelu',
-                 compression_window_size: int = None,
+                 compression_window_size: int = None, size_multiplier : int = 4,
                  use_masking: bool = True,
                  vanilla_wiring=False):
         self.attention_layer = MultiHeadSelfAttention(
@@ -183,7 +185,7 @@ class TransformerBlock:
             else lambda x: x)
         self.norm2_layer = LayerNormalization(name=f'{name}_normalization2')
         self.transition_layer = TransformerTransition(
-            name=f'{name}_transition', activation=activation)
+            name=f'{name}_transition', activation=activation, size_multiplier=size_multiplier)
         self.addition_layer = Add(name=f'{name}_add')
         self.vanilla_wiring = vanilla_wiring
 
@@ -253,7 +255,7 @@ class TransformerACT(Layer):
     # noinspection PyAttributeOutsideInit
     def build(self, input_shape):
         assert len(input_shape) == 3
-        _, sequence_length, d_model = input_shape
+        batch_size, sequence_length, d_model = input_shape
         self.halting_kernel = self.add_weight(
             name='halting_kernel',
             shape=(d_model, 1),
@@ -294,7 +296,8 @@ class TransformerACT(Layer):
                     self.halting_biases,
                     data_format='channels_last'),
                 [-1, sequence_length]))
-        if self.zeros_like_halting is None:
+        # if self.zeros_like_halting is None:
+        if self.zeros_like_halting is None or self.ones_like_halting.shape != halting.shape:
             self.initialize_control_tensors(halting)
         # useful flags
         step_is_active = K.greater(self.halt_budget, 0)
@@ -331,7 +334,8 @@ class TransformerACT(Layer):
         # we can simply use a constant tensor of zeroes, which means that
         # we won't even calculate the output of those steps, saving
         # some real computational time.
-        if self.zeros_like_input is None:
+        #if self.zeros_like_input is None:
+        if self.zeros_like_input is None or self.zeros_like_input.shape != inputs.shape:
             self.zeros_like_input = K.zeros_like(
                 inputs, name='zeros_like_input')
         # just because K.any(step_is_active) doesn't work in PlaidML
@@ -341,7 +345,8 @@ class TransformerACT(Layer):
             any_step_is_active,
             K.expand_dims(halting_prob, -1) * inputs,
             self.zeros_like_input)
-        if self.weighted_output is None:
+        #if self.weighted_output is None:
+        if self.weighted_output is None or self.weighted_output.shape != step_weighted_output.shape:
             self.weighted_output = step_weighted_output
         else:
             self.weighted_output += step_weighted_output
