@@ -81,7 +81,6 @@ class _BaseMultiHeadAttention(Layer):
                 initializer='zeros',
                 trainable=True)
 
-
     def validate_model_dimensionality(self, d_model: int):
         if d_model % self.num_heads != 0:
             raise ValueError(
@@ -157,9 +156,9 @@ class _BaseMultiHeadAttention(Layer):
         # for further matrix multiplication
         sqrt_d = K.constant(np.sqrt(d_model // self.num_heads),
                             dtype=K.floatx())
-        q_shape = K.shape(q)
-        k_t_shape = K.shape(k_transposed)
-        v_shape = K.shape(v)
+        q_shape = K.int_shape(q)
+        k_t_shape = K.int_shape(k_transposed)
+        v_shape = K.int_shape(v)
         # before performing batch_dot all tensors are being converted to 3D
         # shape (batch_size * num_heads, rows, cols) to make sure batch_dot
         # performs identically on all backends
