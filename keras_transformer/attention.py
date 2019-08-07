@@ -81,6 +81,7 @@ class _BaseMultiHeadAttention(Layer):
                 initializer='zeros',
                 trainable=True)
 
+
     def validate_model_dimensionality(self, d_model: int):
         if d_model % self.num_heads != 0:
             raise ValueError(
@@ -140,13 +141,14 @@ class _BaseMultiHeadAttention(Layer):
                                  d_model // self.num_heads)),
                             kernel,
                             strides=self.compression_window_size,
-                            padding='valid', data_format='channels_last'),
+                            padding='same', data_format='channels_last'),
                         bias,
                         data_format='channels_last'),
                     # new shape
                     K.concatenate([
                         K.shape(item)[:2],
-                        [-1, d_model // self.num_heads]]))
+                        #[-1, d_model // self.num_heads]]))
+                        [K.int_shape(item)[2] // self.compression_window_size, d_model // self.num_heads]]))
                 for item, kernel, bias in (
                     (k, self.k_conv_kernel, self.k_conv_bias),
                     (v, self.v_conv_kernel, self.v_conv_bias))]
@@ -155,9 +157,9 @@ class _BaseMultiHeadAttention(Layer):
         # for further matrix multiplication
         sqrt_d = K.constant(np.sqrt(d_model // self.num_heads),
                             dtype=K.floatx())
-        q_shape = K.int_shape(q)
-        k_t_shape = K.int_shape(k_transposed)
-        v_shape = K.int_shape(v)
+        q_shape = K.shape(q)
+        k_t_shape = K.shape(k_transposed)
+        v_shape = K.shape(v)
         # before performing batch_dot all tensors are being converted to 3D
         # shape (batch_size * num_heads, rows, cols) to make sure batch_dot
         # performs identically on all backends
@@ -169,7 +171,8 @@ class _BaseMultiHeadAttention(Layer):
                             K.batch_dot(
                                 K.reshape(q, (-1,) + q_shape[-2:]),
                                 K.reshape(k_transposed,
-                                          (-1,) + k_t_shape[-2:]))
+                                          (-1,) + k_t_shape[-2:])
+                                        )
                             / sqrt_d)),
                     training=training),
                 K.reshape(v, (-1,) + v_shape[-2:])),

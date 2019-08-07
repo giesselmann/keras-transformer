@@ -280,8 +280,8 @@ class TransformerACT(Layer):
             halting, name='zeros_like_halting')
         self.ones_like_halting = K.ones_like(
             halting, name='ones_like_halting')
-        self.remainder = self.ones_like_halting
-        self.active_steps = self.zeros_like_halting
+        self.remainder = K.ones_like(halting, name='remainder')
+        self.active_steps = K.zeros_like(halting, name='active_steps')
         self.halt_budget = self.ones_like_halting - self.halt_epsilon
 
     def call(self, inputs, **kwargs):
