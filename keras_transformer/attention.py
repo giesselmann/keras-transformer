@@ -140,7 +140,7 @@ class _BaseMultiHeadAttention(Layer):
                                  d_model // self.num_heads)),
                             kernel,
                             strides=self.compression_window_size,
-                            padding='same', data_format='channels_last'),
+                            padding='valid', data_format='channels_last'),
                         bias,
                         data_format='channels_last'),
                     # new shape
