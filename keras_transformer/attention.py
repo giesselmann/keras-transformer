@@ -11,7 +11,7 @@ class _BaseMultiHeadAttention(Layer):
     Self-attention and its more general form used in decoders (the one which
     takes values and keys from the encoder).
     """
-    def __init__(self, num_heads: int, use_masking: bool,
+    def __init__(self, d_model : int, num_heads: int, use_masking: bool,
                  dropout: float = 0.0,
                  compression_window_size: int = None,
                  **kwargs):
@@ -30,6 +30,7 @@ class _BaseMultiHeadAttention(Layer):
         :param kwargs: any extra arguments typical for a Keras layer,
           such as name, etc.
         """
+        self.d_model = d_model
         self.num_heads = num_heads
         self.use_masking = use_masking
         self.dropout = dropout
@@ -49,10 +50,10 @@ class _BaseMultiHeadAttention(Layer):
         return config
 
     # noinspection PyAttributeOutsideInit
-    def build_output_params(self, d_model):
+    def build_output_params(self, d_model, d_input):
         self.output_weights = self.add_weight(
             name='output_weights',
-            shape=(d_model, d_model),
+            shape=(d_model, d_input),
             initializer='glorot_uniform',
             trainable=True)
         if self.compression_window_size is not None:
@@ -88,7 +89,7 @@ class _BaseMultiHeadAttention(Layer):
                 f'({d_model}) must be evenly divisible by the number'
                 f'of the attention heads {self.num_heads}')
 
-    def attention(self, pre_q, pre_v, pre_k, out_seq_len: int, d_model: int,
+    def attention(self, pre_q, pre_v, pre_k, out_seq_len: int, d_input: int,
                   training=None):
         """
         Calculates the output of the attention once the affine transformations
@@ -137,7 +138,7 @@ class _BaseMultiHeadAttention(Layer):
                                 item,
                                 (-1,
                                  K.int_shape(item)[-2],
-                                 d_model // self.num_heads)),
+                                 self.d_model // self.num_heads)),
                             kernel,
                             strides=self.compression_window_size,
                             padding='valid', data_format='channels_last'),
@@ -147,14 +148,14 @@ class _BaseMultiHeadAttention(Layer):
                     K.concatenate([
                         K.shape(item)[:2],
                         #[-1, d_model // self.num_heads]]))
-                        [K.int_shape(item)[2] // self.compression_window_size, d_model // self.num_heads]]))
+                        [K.int_shape(item)[2] // self.compression_window_size, self.d_model // self.num_heads]]))
                 for item, kernel, bias in (
                     (k, self.k_conv_kernel, self.k_conv_bias),
                     (v, self.v_conv_kernel, self.v_conv_bias))]
             k_transposed = K.permute_dimensions(k, [0, 1, 3, 2])
         # shaping K into (batch_size, num_heads, d_model//heads, seq_len)
         # for further matrix multiplication
-        sqrt_d = K.constant(np.sqrt(d_model // self.num_heads),
+        sqrt_d = K.constant(np.sqrt(self.d_model // self.num_heads),
                             dtype=K.floatx())
         q_shape = K.int_shape(q)
         k_t_shape = K.int_shape(k_transposed)
@@ -178,10 +179,10 @@ class _BaseMultiHeadAttention(Layer):
             (-1, self.num_heads, q_shape[-2], v_shape[-1]))
         attention_heads_merged = K.reshape(
             K.permute_dimensions(attention_heads, [0, 2, 1, 3]),
-            (-1, d_model))
+            (-1, self.d_model))
         attention_out = K.reshape(
             K.dot(attention_heads_merged, self.output_weights),
-            (-1, out_seq_len, d_model))
+            (-1, out_seq_len, d_input))
         return attention_out
 
     def apply_dropout_if_needed(self, attention_softmax, training=None):
@@ -293,8 +294,8 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
     def build(self, input_shape):
         if not isinstance(input_shape, tuple):
             raise ValueError('Invalid input')
-        d_model = input_shape[-1]
-        self.validate_model_dimensionality(d_model)
+        d_input = input_shape[-1]
+        self.validate_model_dimensionality(self.d_model)
         # These weights are concatenated matrices W_q, W_k and W_v which
         # are, in turn, concatenated W matrices of keys, queries and values
         # for each of the heads. So, essentially it's a concatenation of
@@ -302,29 +303,33 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
         # for all h heads.
         self.qkv_weights = self.add_weight(
             name='qkv_weights',
-            shape=(d_model, d_model * 3),  # * 3 for q, k and v
+            shape=(d_input, self.d_model * 3),  # * 3 for q, k and v
             initializer='glorot_uniform',
             trainable=True)
-        self.build_output_params(d_model)
+        self.build_output_params(self.d_model, d_input)
         return super().build(input_shape)
 
     def call(self, inputs, **kwargs):
         if not K.is_tensor(inputs):
             raise ValueError(
                 'The layer can be called only with one tensor as an argument')
-        _, seq_len, d_model = K.int_shape(inputs)
+        _, seq_len, d_input = K.int_shape(inputs)
         # The first thing we need to do is to perform affine transformations
         # of the inputs to get the Queries, the Keys and the Values.
-        qkv = K.dot(K.reshape(inputs, [-1, d_model]), self.qkv_weights)
+        # (batch_size * seq_len, d_model * 3)  3 for q, k and v
+        qkv = K.dot(K.reshape(inputs, [-1, d_input]), self.qkv_weights)
         # splitting the keys, the values and the queries before further
         # processing
+        # pre_q (batch_size, q_seq_len, num_heads, d_model // num_heads)
+        # pre_k (batch_size, k_seq_len, num_heads, d_model // num_heads)
+        # pre_v (batch_size, v_seq_len, num_heads, d_model // num_heads)
         pre_q, pre_k, pre_v = [
             K.reshape(
                 # K.slice(qkv, (0, i * d_model), (-1, d_model)),
-                qkv[:, i * d_model:(i + 1) * d_model],
-                (-1, seq_len, self.num_heads, d_model // self.num_heads))
+                qkv[:, i * self.d_model:(i + 1) * self.d_model],
+                (-1, seq_len, self.num_heads, self.d_model // self.num_heads))
             for i in range(3)]
-        attention_out = self.attention(pre_q, pre_v, pre_k, seq_len, d_model,
+        attention_out = self.attention(pre_q, pre_v, pre_k, seq_len, d_input,
                                        training=kwargs.get('training'))
         return attention_out
 

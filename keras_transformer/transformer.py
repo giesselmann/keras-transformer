@@ -168,14 +168,14 @@ class TransformerBlock:
     more reasonable. You can use classical Transformer's (2017) way of
     connecting the pieces by passing vanilla_wiring=True to the constructor.
     """
-    def __init__(self, name: str, num_heads: int,
+    def __init__(self, name: str, d_model: int, num_heads: int,
                  residual_dropout: float = 0, attention_dropout: float = 0,
                  activation: Optional[Union[str, Callable]] = 'gelu',
                  compression_window_size: int = None, size_multiplier : int = 4,
                  use_masking: bool = True,
                  vanilla_wiring=False):
         self.attention_layer = MultiHeadSelfAttention(
-            num_heads, use_masking=use_masking, dropout=attention_dropout,
+            d_model, num_heads, use_masking=use_masking, dropout=attention_dropout,
             compression_window_size=compression_window_size,
             name=f'{name}_self_attention')
         self.norm1_layer = LayerNormalization(name=f'{name}_normalization1')
