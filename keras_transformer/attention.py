@@ -43,6 +43,7 @@ class _BaseMultiHeadAttention(Layer):
 
     def get_config(self):
         config = super().get_config()
+        config['d_model'] = self.d_model
         config['num_heads'] = self.num_heads
         config['use_masking'] = self.use_masking
         config['dropout'] = self.dropout
