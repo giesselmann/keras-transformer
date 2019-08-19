@@ -12,6 +12,7 @@ class _BaseMultiHeadAttention(Layer):
     takes values and keys from the encoder).
     """
     def __init__(self, d_model : int, num_heads: int, use_masking: bool,
+                 local_masking: int = None,
                  dropout: float = 0.0,
                  compression_window_size: int = None,
                  **kwargs):
@@ -38,7 +39,12 @@ class _BaseMultiHeadAttention(Layer):
                 and compression_window_size <= 0):
             assert ValueError(
                 f"Too small compression window ({compression_window_size})")
+        if (local_masking is not None
+                and local_masking <= 0):
+            assert ValueError(
+                f"Too small local masking window ({local_masking})")
         self.compression_window_size = compression_window_size
+        self.local_masking = local_masking
         super().__init__(**kwargs)
 
     def get_config(self):
@@ -46,6 +52,7 @@ class _BaseMultiHeadAttention(Layer):
         config['d_model'] = self.d_model
         config['num_heads'] = self.num_heads
         config['use_masking'] = self.use_masking
+        config['local_masking'] = self.local_masking
         config['dropout'] = self.dropout
         config['compression_window_size'] = self.compression_window_size
         return config
@@ -168,13 +175,14 @@ class _BaseMultiHeadAttention(Layer):
             K.batch_dot(
                 self.apply_dropout_if_needed(
                     K.softmax(
-                        self.mask_attention_if_needed(
-                            K.batch_dot(
-                                K.reshape(q, (-1,) + q_shape[-2:]),
-                                K.reshape(k_transposed,
-                                          (-1,) + k_t_shape[-2:])
-                                        )
-                            / sqrt_d)),
+                        self.mask_local_if_needed(
+                            self.mask_attention_if_needed(
+                                K.batch_dot(
+                                    K.reshape(q, (-1,) + q_shape[-2:]),
+                                    K.reshape(k_transposed,
+                                              (-1,) + k_t_shape[-2:])
+                                            )
+                                / sqrt_d))),
                     training=training),
                 K.reshape(v, (-1,) + v_shape[-2:])),
             (-1, self.num_heads, q_shape[-2], v_shape[-1]))
@@ -221,6 +229,23 @@ class _BaseMultiHeadAttention(Layer):
             K.constant(close_to_negative_inf * inverse_low_triangle))
         return result
 
+    def mask_local_if_needed(self, dot_product):
+        if not self.local_masking:
+            return dot_product
+        last_dims = K.int_shape(dot_product)[-2:]
+        close_to_negative_inf = -1e9
+        dot_product_zeros = np.zeros(last_dims).reshape((1,) + last_dims)
+        dot_product_zeros[np.repeat(np.arange(0, dot_product_zeros.shape[0]), self.local_masking),
+                          (np.arange(self.local_masking)[None, :] +
+                           np.linspace(0,
+                                       dot_product_zeros.shape[1] - self.local_masking + 1,
+                                       dot_product_zeros.shape[0],
+                                       dtype=int, endpoint=False)[:, None]
+                          ).flatten()] = 1
+        inv_dot_product_zeros = 1 - dot_product_zeros
+        result = (K.constant(dot_product_zeros, dtype=K.floatx()) * dot_product +
+                  K.constant(close_to_negative_inf * inv_dot_product_zeros))
+        return result
 
 class MultiHeadAttention(_BaseMultiHeadAttention):
     """
