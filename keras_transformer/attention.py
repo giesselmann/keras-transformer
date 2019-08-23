@@ -330,9 +330,12 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
 
     # noinspection PyAttributeOutsideInit
     def build(self, input_shape):
-        if not isinstance(input_shape, tuple):
-            raise ValueError('Invalid input')
-        d_input = input_shape[-1]
+        if not (isinstance(input_shape, list) and len(input_shape) == 2):
+            raise ValueError(
+                'You must call this layer passing a list of two tensors'
+                '(for keys/values and queries)')
+        signal_dim, length_dim = input_shape
+        d_input = signal_dim[-1]
         self.validate_model_dimensionality(self.d_model)
         # These weights are concatenated matrices W_q, W_k and W_v which
         # are, in turn, concatenated W matrices of keys, queries and values
@@ -345,7 +348,7 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
             initializer='glorot_uniform',
             trainable=True)
         self.build_output_params(self.d_model, d_input)
-        return super().build(input_shape)
+        return super().build(signal_dim)
 
     def call(self, inputs, **kwargs):
         if not (isinstance(inputs, list) and len(inputs) == 2):
