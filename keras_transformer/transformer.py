@@ -201,8 +201,8 @@ class TransformerBlock:
         self.addition_layer = Add(name=f'{name}_add')
         self.vanilla_wiring = vanilla_wiring
 
-    def __call__(self, _input):
-        output = self.attention_layer(_input)
+    def __call__(self, _input, lengths=None):
+        output = self.attention_layer(_input, lengths=lengths)
         if self.transition_layer is None and self.transition_type == 'cnn':
             self.transition_layer = Conv1D(K.int_shape(output)[-1], self.size_multiplier, padding='same', data_format='channels_last',
                 name=f'{self.name}_transition', activation=self.activation, kernel_initializer='he_normal')

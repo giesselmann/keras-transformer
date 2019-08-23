@@ -3,6 +3,7 @@ import numpy as np
 from keras import backend as K
 from keras.engine import Layer
 from keras.utils import get_custom_objects
+import tensorflow as tf
 
 
 class _BaseMultiHeadAttention(Layer):
@@ -98,7 +99,7 @@ class _BaseMultiHeadAttention(Layer):
                 f'of the attention heads {self.num_heads}')
 
     def attention(self, pre_q, pre_v, pre_k, out_seq_len: int, d_input: int,
-                  training=None):
+                  lengths=None, training=None):
         """
         Calculates the output of the attention once the affine transformations
         of the inputs are done. Here's the shapes of the arguments:
@@ -175,14 +176,16 @@ class _BaseMultiHeadAttention(Layer):
             K.batch_dot(
                 self.apply_dropout_if_needed(
                     K.softmax(
-                        self.mask_local_if_needed(
-                            self.mask_attention_if_needed(
-                                K.batch_dot(
-                                    K.reshape(q, (-1,) + q_shape[-2:]),
-                                    K.reshape(k_transposed,
-                                              (-1,) + k_t_shape[-2:])
-                                            )
-                                / sqrt_d))),
+                        self.mask_length_if_provided(
+                            self.mask_local_if_needed(
+                                self.mask_attention_if_needed(
+                                    K.batch_dot(
+                                        K.reshape(q, (-1,) + q_shape[-2:]),
+                                        K.reshape(k_transposed,
+                                                  (-1,) + k_t_shape[-2:])
+                                                )
+                                / sqrt_d)),
+                        lengths=lengths)),
                     training=training),
                 K.reshape(v, (-1,) + v_shape[-2:])),
             (-1, self.num_heads, q_shape[-2], v_shape[-1]))
@@ -202,6 +205,15 @@ class _BaseMultiHeadAttention(Layer):
             return K.in_train_phase(dropped_softmax, attention_softmax,
                                     training=training)
         return attention_softmax
+
+    def mask_length_if_provided(self, dot_product, lengths=None):
+        if lengths is None:
+            return dot_product
+        _, sequence_length, d_model = K.int_shape(dot_product)
+        close_to_negative_inf = -1e9
+        mask = K.expand_dims(K.permute_dimensions(tf.sequence_mask(lengths, maxlen=sequence_length), [0,2,1]), 1)
+        result = K.reshape(dot_product, (-1, self.num_heads, sequence_length, d_model))  * (1 - K.cast(mask, 'float32') * K.constant(close_to_negative_inf))
+        return K.reshape(result, (-1, sequence_length, d_model))
 
     def mask_attention_if_needed(self, dot_product):
         """
@@ -335,7 +347,7 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
         self.build_output_params(self.d_model, d_input)
         return super().build(input_shape)
 
-    def call(self, inputs, **kwargs):
+    def call(self, inputs, lengths=None, **kwargs):
         if not K.is_tensor(inputs):
             raise ValueError(
                 'The layer can be called only with one tensor as an argument')
@@ -356,7 +368,7 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
                 (-1, seq_len, self.num_heads, self.d_model // self.num_heads))
             for i in range(3)]
         attention_out = self.attention(pre_q, pre_v, pre_k, seq_len, d_input,
-                                       training=kwargs.get('training'))
+                                       lengths=lengths, training=kwargs.get('training'))
         return attention_out
 
     def compute_output_shape(self, input_shape):
