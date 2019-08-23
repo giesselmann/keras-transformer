@@ -40,7 +40,7 @@ class _BaseMultiHeadAttention(Layer):
             assert ValueError(
                 f"Too small compression window ({compression_window_size})")
         if (local_masking is not None
-                and local_masking <= 0):
+                and local_masking <= 1):
             assert ValueError(
                 f"Too small local masking window ({local_masking})")
         self.compression_window_size = compression_window_size

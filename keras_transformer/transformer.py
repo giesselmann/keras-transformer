@@ -8,6 +8,7 @@ import math
 from typing import Union, Callable, Optional
 
 from keras.layers import Layer, Add, Dropout
+from keras.layers import Conv1D
 from keras import activations
 from keras import initializers
 # noinspection PyPep8Naming
@@ -169,11 +170,15 @@ class TransformerBlock:
     connecting the pieces by passing vanilla_wiring=True to the constructor.
     """
     def __init__(self, name: str, d_model: int, num_heads: int,
+                 transition_type = 'dot',
                  residual_dropout: float = 0, attention_dropout: float = 0,
                  activation: Optional[Union[str, Callable]] = 'gelu',
                  compression_window_size: int = None, size_multiplier : int = 4,
                  use_masking: bool = True, local_masking: int = None,
                  vanilla_wiring=False):
+        self.size_multiplier = size_multiplier
+        self.name = name
+        self.activation = activation
         self.attention_layer = MultiHeadSelfAttention(
             d_model, num_heads, use_masking=use_masking, dropout=attention_dropout,
             compression_window_size=compression_window_size, local_masking=local_masking,
@@ -184,13 +189,23 @@ class TransformerBlock:
             if residual_dropout > 0
             else lambda x: x)
         self.norm2_layer = LayerNormalization(name=f'{name}_normalization2')
-        self.transition_layer = TransformerTransition(
-            name=f'{name}_transition', activation=activation, size_multiplier=size_multiplier)
+        if transition_type == 'dot':
+            self.transition_type = 'dot'
+            self.transition_layer = TransformerTransition(
+                name=f'{name}_transition', activation=activation, size_multiplier=size_multiplier)
+        elif transition_type == 'cnn':
+            self.transition_type = 'cnn'
+            self.transition_layer = None
+        else:
+            raise NotImplementedError("Transformer transition {} is not implemented.".format(transition_type))
         self.addition_layer = Add(name=f'{name}_add')
         self.vanilla_wiring = vanilla_wiring
 
     def __call__(self, _input):
         output = self.attention_layer(_input)
+        if self.transition_layer is None and self.transition_type == 'cnn':
+            self.transition_layer = Conv1D(K.int_shape(output)[-1], self.size_multiplier, padding='same', data_format='channels_last',
+                name=f'{self.name}_transition', activation=self.activation, kernel_initializer='he_normal')
         post_residual1 = (
             self.addition_layer([_input, self.dropout_layer(output)])
             if self.vanilla_wiring
