@@ -353,7 +353,7 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
                 'You can call this layer only with a list of two tensors '
                 '(for keys/values and queries)')
         input, lengths = inputs
-        _, seq_len, d_input = K.int_shape(inputs)
+        _, seq_len, d_input = K.int_shape(input)
         # The first thing we need to do is to perform affine transformations
         # of the inputs to get the Queries, the Keys and the Values.
         # (batch_size * seq_len, d_model * 3)  3 for q, k and v
