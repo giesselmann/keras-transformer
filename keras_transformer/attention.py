@@ -330,8 +330,10 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
 
     # noinspection PyAttributeOutsideInit
     def build(self, input_shape):
-        if not isinstance(input_shape, tuple):
-            raise ValueError('Invalid input')
+        if not (isinstance(inputs, list) and len(inputs) == 2):
+            raise ValueError(
+                'You can call this layer only with a list of two tensors '
+                '(for keys/values and queries)')
         d_input = input_shape[-1]
         self.validate_model_dimensionality(self.d_model)
         # These weights are concatenated matrices W_q, W_k and W_v which
@@ -347,15 +349,16 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
         self.build_output_params(self.d_model, d_input)
         return super().build(input_shape)
 
-    def call(self, inputs, lengths=None, **kwargs):
+    def call(self, inputs, **kwargs):
         if not K.is_tensor(inputs):
             raise ValueError(
                 'The layer can be called only with one tensor as an argument')
+        input, lengths = inputs
         _, seq_len, d_input = K.int_shape(inputs)
         # The first thing we need to do is to perform affine transformations
         # of the inputs to get the Queries, the Keys and the Values.
         # (batch_size * seq_len, d_model * 3)  3 for q, k and v
-        qkv = K.dot(K.reshape(inputs, [-1, d_input]), self.qkv_weights)
+        qkv = K.dot(K.reshape(input, [-1, d_input]), self.qkv_weights)
         # splitting the keys, the values and the queries before further
         # processing
         # pre_q (batch_size, q_seq_len, num_heads, d_model // num_heads)
