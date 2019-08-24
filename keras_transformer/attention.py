@@ -259,6 +259,7 @@ class _BaseMultiHeadAttention(Layer):
                   K.constant(close_to_negative_inf * inv_dot_product_zeros))
         return result
 
+
 class MultiHeadAttention(_BaseMultiHeadAttention):
     """
     Multi-head attention which can use two inputs:
@@ -330,11 +331,16 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
 
     # noinspection PyAttributeOutsideInit
     def build(self, input_shape):
-        if not (isinstance(input_shape, list) and len(input_shape) == 2):
+        if isinstance(input_shape, list) and len(input_shape) == 2:
+            # build with input and length tensor
+            signal_dim, length_dim = input_shape
+        elif len(input_shape) == 3:
+            # called with tensor (batch, seq_len, d_model)
+            signal_dim = input_shape
+        else:
             raise ValueError(
-                'You must call this layer passing a list of two tensors'
-                '(for keys/values and queries)')
-        signal_dim, length_dim = input_shape
+                'You must call this layer passing either a list of two tensors'
+                '(for input and lenths), or a single input tensor')
         d_input = signal_dim[-1]
         self.validate_model_dimensionality(self.d_model)
         # These weights are concatenated matrices W_q, W_k and W_v which
@@ -351,11 +357,17 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
         return super().build(signal_dim)
 
     def call(self, inputs, **kwargs):
-        if not (isinstance(inputs, list) and len(inputs) == 2):
+        if isinstance(inputs, list) and len(inputs) == 2:
+            # build with input and length tensor
+            input, lengths = inputs
+        elif K.is_tensor(_input) and len(K.int_shape(_input)) == 3:
+            # called with tensor (batch, seq_len, d_model)
+            input = inputs
+            lengths = None
+        else:
             raise ValueError(
-                'You can call this layer only with a list of two tensors '
-                '(for keys/values and queries)')
-        input, lengths = inputs
+                'You must call this layer passing either a list of two tensors'
+                '(for input and lenths), or a single input tensor')
         _, seq_len, d_input = K.int_shape(input)
         # The first thing we need to do is to perform affine transformations
         # of the inputs to get the Queries, the Keys and the Values.
@@ -377,7 +389,10 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
         return attention_out
 
     def compute_output_shape(self, input_shape):
-        return input_shape
+        if isinstance(input_shape, list):
+            return input_shape[0]
+        else:
+            return input_shape
 
 
 get_custom_objects().update({

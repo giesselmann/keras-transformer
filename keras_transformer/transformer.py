@@ -14,7 +14,7 @@ from keras import initializers
 # noinspection PyPep8Naming
 from keras import backend as K
 from keras.utils import get_custom_objects
-
+import tensorflow as tf
 from keras_transformer.attention import MultiHeadSelfAttention
 
 
@@ -202,7 +202,17 @@ class TransformerBlock:
         self.vanilla_wiring = vanilla_wiring
 
     def __call__(self, _input):
-        input, lengths = _input
+        if isinstance(_input, list) and len(_input) == 2:
+            # called with tensor list of input and lengths
+            input, lengths = _input
+        elif len(_input) == 3:
+            # called with tensor (batch, seq_len, d_model)
+            input = _input
+            lengths = None
+        else:
+            raise ValueError(
+                'You must call this layer passing either a list of two tensors'
+                '(for input and lenths), or a single input tensor')
         output = self.attention_layer([input, lengths])
         if self.transition_layer is None and self.transition_type == 'cnn':
             self.transition_layer = Conv1D(K.int_shape(output)[-1], self.size_multiplier, padding='same', data_format='channels_last',
@@ -269,8 +279,17 @@ class TransformerACT(Layer):
             time_penalty=self.time_penalty)
 
     # noinspection PyAttributeOutsideInit
-    def build(self, input_shape):
-        assert len(input_shape) == 3
+    def build(self, _input_shape):
+        if isinstance(_input_shape, list) and len(_input_shape) == 2:
+            # build with input and length tensor
+            input_shape, _ = _input_shape
+        elif len(_input_shape) == 3:
+            # called with tensor (batch, seq_len, d_model)
+            input_shape = _input_shape
+        else:
+            raise ValueError(
+                'You must call this layer passing either a list of two tensors'
+                '(for input and lenths), or a single input tensor')
         batch_size, sequence_length, d_model = input_shape
         self.halting_kernel = self.add_weight(
             name='halting_kernel',
@@ -300,14 +319,28 @@ class TransformerACT(Layer):
         self.active_steps = K.zeros_like(halting, name='active_steps')
         self.halt_budget = self.ones_like_halting - self.halt_epsilon
 
-    def call(self, inputs, **kwargs):
-        input_shape = K.int_shape(inputs)
+    def call(self, _input, **kwargs):
+        if isinstance(_input, list) and len(_input) == 2:
+            # build with input and length tensor
+            input, lengths = _input
+        elif K.is_tensor(_input) and len(K.int_shape(_input)) == 3:
+            # called with tensor (batch, seq_len, d_model)
+            input = _input
+            lengths = None
+        else:
+            raise ValueError(
+                'You must call this layer passing either a list of two tensors'
+                '(for input and lenths), or a single input tensor')
+        input_shape = K.int_shape(input)
         sequence_length, d_model = input_shape[-2:]
         # output of the "sigmoid halting unit" (not the probability yet)
         halting = K.sigmoid(
             K.reshape(
                 K.bias_add(
-                    K.dot(K.reshape(inputs, [-1, d_model]),
+                    K.dot(
+                        K.reshape(
+                            self.mask_length_if_provided(input, lengths=lengths),
+                            [-1, d_model]),
                           self.halting_kernel),
                     self.halting_biases,
                     data_format='channels_last'),
@@ -351,25 +384,37 @@ class TransformerACT(Layer):
         # we won't even calculate the output of those steps, saving
         # some real computational time.
         #if self.zeros_like_input is None:
-        if self.zeros_like_input is None or self.zeros_like_input.shape != inputs.shape:
+        if self.zeros_like_input is None or self.zeros_like_input.shape != input.shape:
             self.zeros_like_input = K.zeros_like(
-                inputs, name='zeros_like_input')
+                input, name='zeros_like_input')
         # just because K.any(step_is_active) doesn't work in PlaidML
         any_step_is_active = K.greater(
             K.sum(K.cast(step_is_active, 'int32')), 0)
         step_weighted_output = K.switch(
             any_step_is_active,
-            K.expand_dims(halting_prob, -1) * inputs,
+            K.expand_dims(halting_prob, -1) * input,
             self.zeros_like_input)
         #if self.weighted_output is None:
         if self.weighted_output is None or self.weighted_output.shape != step_weighted_output.shape:
             self.weighted_output = step_weighted_output
         else:
             self.weighted_output += step_weighted_output
-        return [inputs, self.weighted_output]
+        return [input, self.weighted_output]
+
+    def mask_length_if_provided(self, input, lengths=None):
+        if lengths is None:
+            return input
+        _, sequence_length, d_model = K.int_shape(input)
+        close_to_inf = 1e9
+        mask = K.permute_dimensions(tf.sequence_mask(lengths, maxlen=sequence_length), [0,2,1])
+        result = input  * (1 - K.cast(mask, 'float32') * K.constant(close_to_inf))
+        return result
 
     def compute_output_shape(self, input_shape):
-        return [input_shape, input_shape]
+        if isinstance(input_shape, list):
+            return [input_shape[0], input_shape[0]]
+        else:
+            return [input_shape, input_shape]
 
     def finalize(self):
         self.add_loss(self.ponder_cost)
