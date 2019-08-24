@@ -317,7 +317,7 @@ class TransformerACT(Layer):
             halting, name='ones_like_halting')
         self.remainder = K.ones_like(halting, name='remainder')
         self.active_steps = K.zeros_like(halting, name='active_steps')
-        self.halt_budget = self.ones_like_halting - self.halt_epsilon
+        self.halt_budget = K.ones_like(halting, name='halt_budget') - self.halt_epsilon
 
     def call(self, _input, **kwargs):
         if isinstance(_input, list) and len(_input) == 2:
@@ -335,17 +335,16 @@ class TransformerACT(Layer):
         sequence_length, d_model = input_shape[-2:]
         # output of the "sigmoid halting unit" (not the probability yet)
         halting = K.sigmoid(
-            self.mask_length_if_provided(
-                K.reshape(
-                    K.bias_add(
-                        K.dot(
-                            K.reshape(
-                                input,
-                                [-1, d_model]),
-                              self.halting_kernel),
-                        self.halting_biases,
-                        data_format='channels_last'),
-                    [-1, sequence_length]), lengths=lengths))
+                    K.reshape(
+                        K.bias_add(
+                            K.dot(
+                                K.reshape(
+                                    input,
+                                    [-1, d_model]),
+                                  self.halting_kernel),
+                            self.halting_biases,
+                            data_format='channels_last'),
+                        [-1, sequence_length]))
         # if self.zeros_like_halting is None:
         if self.zeros_like_halting is None or self.ones_like_halting.shape != halting.shape:
             self.initialize_control_tensors(halting)
@@ -368,6 +367,9 @@ class TransformerACT(Layer):
             step_is_active,
             self.ones_like_halting,
             self.zeros_like_halting)
+        # mask remainder and active steps with signal length
+        self.remainder = self.mask_length_if_provided(self.remainder, lengths=lengths)
+        self.active_steps = self.mask_length_if_provided(self.active_steps, lengths=lengths)
         # We don't know which step is the last, so we keep updating
         # expression for the loss with each call of the layer
         self.ponder_cost = (
@@ -408,7 +410,7 @@ class TransformerACT(Layer):
         _, sequence_length = K.int_shape(input)
         close_to_inf = 1e9
         mask = K.squeeze(tf.sequence_mask(lengths, maxlen=sequence_length), 1)
-        result = input  + (1 - K.cast(mask, 'float32') * K.constant(close_to_inf))
+        result = input  * K.cast(mask, 'float32')
         return result
 
     def compute_output_shape(self, input_shape):
