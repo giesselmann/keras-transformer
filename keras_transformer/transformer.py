@@ -335,16 +335,17 @@ class TransformerACT(Layer):
         sequence_length, d_model = input_shape[-2:]
         # output of the "sigmoid halting unit" (not the probability yet)
         halting = K.sigmoid(
-            K.reshape(
-                K.bias_add(
-                    K.dot(
-                        K.reshape(
-                            self.mask_length_if_provided(input, lengths=lengths),
-                            [-1, d_model]),
-                          self.halting_kernel),
-                    self.halting_biases,
-                    data_format='channels_last'),
-                [-1, sequence_length]))
+            self.mask_length_if_provided(
+                K.reshape(
+                    K.bias_add(
+                        K.dot(
+                            K.reshape(
+                                input,
+                                [-1, d_model]),
+                              self.halting_kernel),
+                        self.halting_biases,
+                        data_format='channels_last'),
+                    [-1, sequence_length]), lengths=lengths))
         # if self.zeros_like_halting is None:
         if self.zeros_like_halting is None or self.ones_like_halting.shape != halting.shape:
             self.initialize_control_tensors(halting)
@@ -404,10 +405,10 @@ class TransformerACT(Layer):
     def mask_length_if_provided(self, input, lengths=None):
         if lengths is None:
             return input
-        _, sequence_length, d_model = K.int_shape(input)
+        _, sequence_length = K.int_shape(input)
         close_to_inf = 1e9
-        mask = K.permute_dimensions(tf.sequence_mask(lengths, maxlen=sequence_length), [0,2,1])
-        result = input  * (1 - K.cast(mask, 'float32') * K.constant(close_to_inf))
+        mask = K.squeeze(tf.sequence_mask(lengths, maxlen=sequence_length), 1)
+        result = input  + (1 - K.cast(mask, 'float32') * K.constant(close_to_inf))
         return result
 
     def compute_output_shape(self, input_shape):
