@@ -5,12 +5,14 @@ Contains implementation of the Transformer model described in papers
 """
 import sys
 import math
+import numpy as np
 from typing import Union, Callable, Optional
 
 from keras.layers import Layer, Add, Dropout
 from keras.layers import Conv1D
 from keras import activations
 from keras import initializers
+from keras.regularizers import l1, l2
 # noinspection PyPep8Naming
 from keras import backend as K
 from keras.utils import get_custom_objects
@@ -212,11 +214,14 @@ class TransformerBlock:
         else:
             raise ValueError(
                 'You must call this layer passing either a list of two tensors'
-                '(for input and lenths), or a single input tensor')
+                '(for input and lengths), or a single input tensor')
         output = self.attention_layer([input, lengths])
         if self.transition_layer is None and self.transition_type == 'cnn':
-            self.transition_layer = Conv1D(K.int_shape(output)[-1], self.size_multiplier, padding='same', data_format='channels_last',
-                name=f'{self.name}_transition', activation=self.activation, kernel_initializer='he_normal')
+            self.transition_layer = Conv1D(K.int_shape(output)[-1], self.size_multiplier,
+                            padding='same', data_format='channels_last',
+                            name=f'{self.name}_transition', activation=self.activation,
+                            kernel_regularizer=l2(0.01), bias_regularizer=l2(0.01),
+                            kernel_initializer='he_normal')
         post_residual1 = (
             self.addition_layer([input, self.dropout_layer(output)])
             if self.vanilla_wiring
@@ -250,7 +255,7 @@ class TransformerACT(Layer):
         result = act_weighted_output
 
     """
-    def __init__(self, halt_epsilon=0.01, time_penalty=0.01, **kwargs):
+    def __init__(self, halt_epsilon=0.01, time_penalty=0.01, return_step=False, **kwargs):
         """
         :param halt_epsilon: a small constant that allows computation to halt
             after a single update (sigmoid never reaches exactly 1.0)
@@ -270,6 +275,7 @@ class TransformerACT(Layer):
         self.halt_budget = None
         self.remainder = None
         self.active_steps = None
+        self.return_step = return_step
         super().__init__(**kwargs)
 
     def get_config(self):
@@ -304,7 +310,7 @@ class TransformerACT(Layer):
         self.time_penalty_t = K.constant(self.time_penalty, dtype=K.floatx())
         return super().build(input_shape)
 
-    def initialize_control_tensors(self, halting):
+    def initialize_control_tensors(self, halting, batch_size):
         """
         Initializes constants and some step-tracking variables
         during the first call of the layer (since for the Universal Transformer
@@ -318,6 +324,7 @@ class TransformerACT(Layer):
         self.remainder = K.ones_like(halting, name='remainder')
         self.active_steps = K.zeros_like(halting, name='active_steps')
         self.halt_budget = K.ones_like(halting, name='halt_budget') - self.halt_epsilon
+        self.batch_size = batch_size
 
     def call(self, _input, **kwargs):
         if isinstance(_input, list) and len(_input) == 2:
@@ -330,9 +337,9 @@ class TransformerACT(Layer):
         else:
             raise ValueError(
                 'You must call this layer passing either a list of two tensors'
-                '(for input and lenths), or a single input tensor')
+                '(for input and lengths), or a single input tensor')
         input_shape = K.int_shape(input)
-        sequence_length, d_model = input_shape[-2:]
+        batch_size, sequence_length, d_model = input_shape
         # output of the "sigmoid halting unit" (not the probability yet)
         halting = K.sigmoid(
                     K.reshape(
@@ -346,8 +353,9 @@ class TransformerACT(Layer):
                             data_format='channels_last'),
                         [-1, sequence_length]))
         # if self.zeros_like_halting is None:
-        if self.zeros_like_halting is None or self.ones_like_halting.shape != halting.shape:
-            self.initialize_control_tensors(halting)
+        if self.zeros_like_halting is None or self.batch_size != batch_size:
+            print("init control tensors {}".format(str(halting.shape)))
+            self.initialize_control_tensors(halting, batch_size)
         # useful flags
         step_is_active = K.greater(self.halt_budget, 0)
         no_further_steps = K.less_equal(self.halt_budget - halting, 0)
@@ -373,14 +381,13 @@ class TransformerACT(Layer):
         # We don't know which step is the last, so we keep updating
         # expression for the loss with each call of the layer
         self.ponder_cost = (
-            self.time_penalty_t * K.mean(self.remainder + self.active_steps))
+            self.time_penalty_t * K.mean(self.remainder + self.active_steps, axis=1))
         # Updating "the remaining probability" and the halt budget
         self.remainder = K.switch(
             no_further_steps,
             self.remainder,
             self.remainder - halting)
         self.halt_budget -= halting  # OK to become negative
-
         # If none of the inputs are active at this step, then instead
         # of zeroing them out by multiplying to all-zeroes halting_prob,
         # we can simply use a constant tensor of zeroes, which means that
@@ -398,26 +405,31 @@ class TransformerACT(Layer):
             K.expand_dims(halting_prob, -1) * input,
             self.zeros_like_input)
         #if self.weighted_output is None:
-        if self.weighted_output is None or self.weighted_output.shape != step_weighted_output.shape:
+        if self.weighted_output is None or self.weighted_output.shape[0] != batch_size:
             self.weighted_output = step_weighted_output
         else:
             self.weighted_output += step_weighted_output
-        return [input, self.weighted_output]
+        if not self.return_step:
+            return [input, self.weighted_output, self.ponder_cost]
+        else:
+            return [input, self.weighted_output, self.ponder_cost, self.active_steps]
 
     def mask_length_if_provided(self, input, lengths=None):
         if lengths is None:
             return input
         _, sequence_length = K.int_shape(input)
-        close_to_inf = 1e9
         mask = K.squeeze(tf.sequence_mask(lengths, maxlen=sequence_length), 1)
-        result = input  * K.cast(mask, 'float32')
+        result = input * K.cast(mask, 'float32')
         return result
 
     def compute_output_shape(self, input_shape):
         if isinstance(input_shape, list):
-            return [input_shape[0], input_shape[0]]
+            result = [input_shape[0], input_shape[0], (input_shape[0][0],)]
         else:
-            return [input_shape, input_shape]
+            result [input_shape, input_shape, (input_shape[0],)]
+        if self.return_step:
+            result += result[0][:-1]
+        return result
 
     def finalize(self):
         self.add_loss(self.ponder_cost)

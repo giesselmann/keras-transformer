@@ -340,7 +340,7 @@ class MultiHeadSelfAttention(_BaseMultiHeadAttention):
         else:
             raise ValueError(
                 'You must call this layer passing either a list of two tensors'
-                '(for input and lenths), or a single input tensor')
+                '(for input and lengths), or a single input tensor')
         d_input = signal_dim[-1]
         self.validate_model_dimensionality(self.d_model)
         # These weights are concatenated matrices W_q, W_k and W_v which
