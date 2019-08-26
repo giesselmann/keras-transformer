@@ -255,7 +255,7 @@ class TransformerACT(Layer):
         result = act_weighted_output
 
     """
-    def __init__(self, halt_epsilon=0.01, time_penalty=0.01, return_step=False, **kwargs):
+    def __init__(self, max_steps, halt_epsilon=0.01, time_penalty=0.01, return_step=False, **kwargs):
         """
         :param halt_epsilon: a small constant that allows computation to halt
             after a single update (sigmoid never reaches exactly 1.0)
@@ -276,13 +276,16 @@ class TransformerACT(Layer):
         self.remainder = None
         self.active_steps = None
         self.return_step = return_step
+        self.max_steps = max_steps
+        self.current_step = 0
         super().__init__(**kwargs)
 
     def get_config(self):
         return dict(
             super().get_config(),
             halt_epsilon=self.halt_epsilon,
-            time_penalty=self.time_penalty)
+            time_penalty=self.time_penalty,
+            max_steps=self.max_steps)
 
     # noinspection PyAttributeOutsideInit
     def build(self, _input_shape):
@@ -296,7 +299,7 @@ class TransformerACT(Layer):
             raise ValueError(
                 'You must call this layer passing either a list of two tensors'
                 '(for input and lenths), or a single input tensor')
-        batch_size, sequence_length, d_model = input_shape
+        _, sequence_length, d_model = input_shape
         self.halting_kernel = self.add_weight(
             name='halting_kernel',
             shape=(d_model, 1),
@@ -310,21 +313,18 @@ class TransformerACT(Layer):
         self.time_penalty_t = K.constant(self.time_penalty, dtype=K.floatx())
         return super().build(input_shape)
 
-    def initialize_control_tensors(self, halting, batch_size):
+    def initialize_control_tensors(self, halting):
         """
         Initializes constants and some step-tracking variables
         during the first call of the layer (since for the Universal Transformer
         all the following calls are supposed to be with inputs of identical
         shapes).
         """
-        self.zeros_like_halting = K.zeros_like(
-            halting, name='zeros_like_halting')
-        self.ones_like_halting = K.ones_like(
-            halting, name='ones_like_halting')
+        self.zeros_like_halting = K.zeros_like(halting, name='zeros_like_halting')
+        self.ones_like_halting = K.ones_like(halting, name='ones_like_halting')
         self.remainder = K.ones_like(halting, name='remainder')
         self.active_steps = K.zeros_like(halting, name='active_steps')
         self.halt_budget = K.ones_like(halting, name='halt_budget') - self.halt_epsilon
-        self.batch_size = batch_size
 
     def call(self, _input, **kwargs):
         if isinstance(_input, list) and len(_input) == 2:
@@ -339,7 +339,7 @@ class TransformerACT(Layer):
                 'You must call this layer passing either a list of two tensors'
                 '(for input and lengths), or a single input tensor')
         input_shape = K.int_shape(input)
-        batch_size, sequence_length, d_model = input_shape
+        _, sequence_length, d_model = input_shape
         # output of the "sigmoid halting unit" (not the probability yet)
         halting = K.sigmoid(
                     K.reshape(
@@ -353,9 +353,9 @@ class TransformerACT(Layer):
                             data_format='channels_last'),
                         [-1, sequence_length]))
         # if self.zeros_like_halting is None:
-        if self.zeros_like_halting is None or self.batch_size != batch_size:
+        if self.zeros_like_halting is None or self.current_step % self.max_steps == 0:
             print("init control tensors {}".format(str(halting.shape)))
-            self.initialize_control_tensors(halting, batch_size)
+            self.initialize_control_tensors(halting)
         # useful flags
         step_is_active = K.greater(self.halt_budget, 0)
         no_further_steps = K.less_equal(self.halt_budget - halting, 0)
@@ -394,9 +394,8 @@ class TransformerACT(Layer):
         # we won't even calculate the output of those steps, saving
         # some real computational time.
         #if self.zeros_like_input is None:
-        if self.zeros_like_input is None or self.zeros_like_input.shape != input.shape:
-            self.zeros_like_input = K.zeros_like(
-                input, name='zeros_like_input')
+        if self.zeros_like_input is None or self.current_step % self.max_steps == 0:
+            self.zeros_like_input = K.zeros_like(input, name='zeros_like_input')
         # just because K.any(step_is_active) doesn't work in PlaidML
         any_step_is_active = K.greater(
             K.sum(K.cast(step_is_active, 'int32')), 0)
@@ -404,11 +403,11 @@ class TransformerACT(Layer):
             any_step_is_active,
             K.expand_dims(halting_prob, -1) * input,
             self.zeros_like_input)
-        #if self.weighted_output is None:
-        if self.weighted_output is None or self.weighted_output.shape[0] != batch_size:
+        if self.weighted_output is None or self.current_step % self.max_steps == 0:
             self.weighted_output = step_weighted_output
         else:
             self.weighted_output += step_weighted_output
+        self.current_step += 1
         if not self.return_step:
             return [input, self.weighted_output, self.ponder_cost]
         else:
