@@ -285,7 +285,8 @@ class TransformerACT(Layer):
             super().get_config(),
             halt_epsilon=self.halt_epsilon,
             time_penalty=self.time_penalty,
-            max_steps=self.max_steps)
+            max_steps=self.max_steps,
+            return_step=self.return_step)
 
     # noinspection PyAttributeOutsideInit
     def build(self, _input_shape):
